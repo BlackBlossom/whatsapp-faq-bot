@@ -1,2 +1,5 @@
 node_modules/
 .env
+deleteMessages.js
+seedFaqs.js
+listModels.js
