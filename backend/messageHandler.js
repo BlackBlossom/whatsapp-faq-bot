@@ -1,65 +1,58 @@
 // backend/messageHandler.js
 const axios = require('axios');
 const { GoogleGenAI } = require('@google/genai');
-
 const ai = new GoogleGenAI({ apiKey: process.env.GEMINI_API_KEY });
+
 const Message = require('./models/Message');
 const Faq     = require('./models/Faq');
 const prompts = require('./promptTemplates');
 
-function detectDepartment(text) {
+function detectIntent(text) {
   const lower = text.toLowerCase();
-  if (lower.includes('book') || lower.includes('appointment')) return 'booking';
-  if (lower.includes('price') || lower.includes('buy'))       return 'sales';
-  if (lower.includes('problem')|| lower.includes('error') ||
-      lower.includes('issue'))                              return 'support';
+  if (/order\s*#?\d+/.test(lower))                           return 'order';
+  if (lower.includes('recommend') || lower.includes('suggest')) return 'recommend';
+  if (lower.includes('return') || lower.includes('refund'))     return 'returns';
+  if (/about|features|tell me about/.test(lower))             return 'product';
   return 'general';
 }
 
 async function handleMessage(phone, text) {
   console.log('📩 Received:', text, 'from:', phone);
-  const department = detectDepartment(text);
-  console.log('📁 Dept:', department);
+  const intent = detectIntent(text);
+  console.log('📁 Intent:', intent);
 
   let response = "Sorry, I couldn’t generate a proper reply.";
   let aiUsed   = false;
 
-  // 1) Try Gemini AI
+  // Try AI for every intent
   try {
-    const model = ai.models.generateContent({
-      model:    'gemini-2.5-flash',
+    const result = await ai.models.generateContent({
+      model:    'gemini-2.5-flash',            // or another supported model
       contents: [
-        prompts[department],        // <-- your curated system instructions
-        `User: "${text}"`,         // <-- the actual user message
+        prompts[intent],                       // your curated system prompt
+        `User: "${text}"`                      // user’s message
       ]
     });
-
-    const result   = await model;
-    response       = result.text.trim();
-    aiUsed         = true;
-    console.log('🤖 Curated Gemini reply:', response);
+    response = result.text.trim();
+    aiUsed   = true;
+    console.log('🤖 AI reply:', response);
 
   } catch (err) {
-    console.warn('⚠️ Gemini failed, falling back to FAQ:', err.message);
-
-    // 2) Static FAQ fallback
+    console.warn('⚠️ Gemini API failed, falling back to FAQ:', err.message);
     const match = await Faq.findOne({
       question:   text.toLowerCase().trim(),
-      department
+      department: intent
     });
     if (match) {
       response = match.answer;
       console.log('📚 FAQ hit:', response);
-    } else {
-      console.warn('📭 No FAQ match.');
-      response = "I'm sorry, I couldn't find an answer. Please rephrase.";
     }
   }
 
-  // 3) Log interaction
-  await Message.create({ phone, text, response, aiUsed, department });
+  // Log the chat
+  await Message.create({ phone, text, response, aiUsed, department: intent });
 
-  // 4) Send via WhatsApp Cloud API
+  // Send via WhatsApp Cloud API
   try {
     await axios.post(
       `https://graph.facebook.com/v17.0/${process.env.PHONE_NUMBER_ID}/messages`,
@@ -81,8 +74,8 @@ async function handleMessage(phone, text) {
   }
 }
 
-async function getLog() {
+const getLog = async () => {
   return await Message.find().sort({ time: -1 });
-}
+};
 
 module.exports = { handleMessage, getLog };
