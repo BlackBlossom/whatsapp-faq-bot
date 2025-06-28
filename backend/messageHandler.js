@@ -7,6 +7,18 @@ const Message = require('./models/Message');
 const Faq     = require('./models/Faq');
 const prompts = require('./promptTemplates');
 
+// Pull last N messages (both user and bot) for context
+async function fetchHistory(phone, limit = 5) {
+  // Get latest 'limit' entries, then reverse so oldest is first
+  const docs = await Message.find({ phone })
+                            .sort({ time: -1 })
+                            .limit(limit);
+  return docs.reverse().map(doc => {
+    const speaker = doc.aiUsed ? 'Assistant' : 'User';
+    return `${speaker}: ${doc.aiUsed ? doc.response : doc.text}`;
+  });
+}
+
 function detectIntent(text) {
   const lower = text.toLowerCase();
   if (/order\s*#?\d+/.test(lower))                           return 'order';
@@ -24,21 +36,29 @@ async function handleMessage(phone, text) {
   let response = "Sorry, I couldn’t generate a proper reply.";
   let aiUsed   = false;
 
-  // Try AI for every intent
+  // 1) Build contents with:
+  //    a) your system prompt for this intent
+  //    b) recent chat history
+  //    c) the new user message
+  const history = await fetchHistory(phone, 5);  
+  const contents = [
+    prompts[intent],
+    ...history,
+    `User: "${text}"`
+  ];
+
+  // 2) Attempt AI reply with context
   try {
     const result = await ai.models.generateContent({
-      model:    'gemini-2.5-flash',            // or another supported model
-      contents: [
-        prompts[intent],                       // your curated system prompt
-        `User: "${text}"`                      // user’s message
-      ]
+      model:    'gemini-2.5-flash',
+      contents
     });
     response = result.text.trim();
     aiUsed   = true;
     console.log('🤖 AI reply:', response);
 
   } catch (err) {
-    console.warn('⚠️ Gemini API failed, falling back to FAQ:', err.message);
+    console.warn('⚠️ Gemini failed, falling back to FAQ:', err.message);
     const match = await Faq.findOne({
       question:   text.toLowerCase().trim(),
       department: intent
@@ -49,10 +69,10 @@ async function handleMessage(phone, text) {
     }
   }
 
-  // Log the chat
+  // 3) Log the chat (for future context)
   await Message.create({ phone, text, response, aiUsed, department: intent });
 
-  // Send via WhatsApp Cloud API
+  // 4) Send via WhatsApp Cloud API
   try {
     await axios.post(
       `https://graph.facebook.com/v17.0/${process.env.PHONE_NUMBER_ID}/messages`,
