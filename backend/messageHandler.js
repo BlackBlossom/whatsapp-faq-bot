@@ -26,13 +26,18 @@ async function handleMessage(phone, text) {
 
   // 1) Try Gemini AI
   try {
-    const result = await ai.models.generateContent({
+    const model = ai.models.generateContent({
       model:    'gemini-2.5-flash',
-      contents: [ prompts[department], text ]
+      contents: [
+        prompts[department],        // <-- your curated system instructions
+        `User: "${text}"`,         // <-- the actual user message
+      ]
     });
-    response = result.text.trim();
-    aiUsed   = true;
-    console.log('🤖 Gemini reply:', response);
+
+    const result   = await model;
+    response       = result.text.trim();
+    aiUsed         = true;
+    console.log('🤖 Curated Gemini reply:', response);
 
   } catch (err) {
     console.warn('⚠️ Gemini failed, falling back to FAQ:', err.message);
