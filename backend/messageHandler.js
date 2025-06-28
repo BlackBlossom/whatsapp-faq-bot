@@ -1,0 +1,74 @@
+const axios = require('axios');
+const { OpenAI } = require("openai");
+const openai = new OpenAI({ apiKey: process.env.OPENAI_API_KEY });
+
+const Message = require('./models/Message');
+const Faq = require('./models/Faq');
+const prompts = require('./promptTemplates');
+
+const detectDepartment = (text) => {
+  const lower = text.toLowerCase();
+  if (lower.includes("book") || lower.includes("appointment")) return "booking";
+  if (lower.includes("price") || lower.includes("buy")) return "sales";
+  if (lower.includes("problem") || lower.includes("error") || lower.includes("issue")) return "support";
+  return "general";
+};
+
+const handleMessage = async (phone, text) => {
+  const department = detectDepartment(text);
+  let response = "Sorry, I couldn’t generate a proper reply.";
+  let aiUsed = false;
+
+  try {
+    // AI Response attempt
+    const aiResponse = await openai.chat.completions.create({
+      model: "gpt-3.5-turbo",
+      messages: [
+        { role: "system", content: prompts[department] },
+        { role: "user", content: text },
+      ],
+      max_tokens: 150,
+      temperature: 0.7,
+    });
+
+    response = aiResponse.choices[0].message.content.trim();
+    aiUsed = true;
+
+  } catch (err) {
+    console.warn("⚠️ AI failed, trying static FAQ fallback.");
+
+    const match = await Faq.findOne({ question: text.toLowerCase().trim(), department });
+    if (match) {
+      response = match.answer;
+    } else {
+      response = "I'm sorry, I couldn't find an answer to that. Please rephrase your question.";
+    }
+  }
+
+  await Message.create({ phone, text, response, aiUsed, department });
+
+  try {
+    await axios.post(
+      `https://graph.facebook.com/v19.0/${process.env.PHONE_NUMBER_ID}/messages`,
+      {
+        messaging_product: "whatsapp",
+        to: phone,
+        text: { body: response },
+      },
+      {
+        headers: {
+          Authorization: `Bearer ${process.env.WHATSAPP_TOKEN}`,
+          'Content-Type': 'application/json',
+        },
+      }
+    );
+  } catch (err) {
+    console.error('❌ WhatsApp send error:', err.response?.data || err.message);
+  }
+};
+
+const getLog = async () => {
+  return await Message.find().sort({ time: -1 });
+};
+
+module.exports = { handleMessage, getLog };
